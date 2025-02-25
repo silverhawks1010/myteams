@@ -1,5 +1,6 @@
 # Projet My Teams
-## Langage : C
+#### Langage : C
+#### MAUBLANC Kevin, LETELLIER Axel, ROMBAUX Logan, LARRIEU Vincent
 
 ## Présentaiton :
 
