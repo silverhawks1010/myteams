@@ -1,3 +1,8 @@
+/**
+ * @file server.c
+ * @brief Serveur de chat multi-clients avec authentification
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,71 +12,172 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <time.h>
+#include <stdbool.h>
 
 /**
- * Maximum number of clients that can connect simultaneously
+ * @def MAX_CLIENTS
+ * @brief Nombre maximum de clients pouvant se connecter simultanément
  */
 #define MAX_CLIENTS 100
 
 /**
- * Size of the buffer used for message transmission
+ * @def BUFFER_SIZE
+ * @brief Taille du buffer pour les messages
  */
 #define BUFFER_SIZE 1024
 
 /**
- * Path to the log file where all messages are stored
- */
-#define LOG_FILE "conversations.log"
-
-/**
- * Maximum length of a status message
+ * @def STATUS_LENGTH
+ * @brief Longueur maximale d'un message de statut
  */
 #define STATUS_LENGTH 128
 
 /**
- * Structure representing a connected client
+ * @def USERNAME_LENGTH
+ * @brief Longueur maximale d'un nom d'utilisateur
+ */
+#define USERNAME_LENGTH 50
+
+/**
+ * @def PASSWORD_LENGTH
+ * @brief Longueur maximale d'un mot de passe
+ */
+#define PASSWORD_LENGTH 50
+
+/**
+ * @def LOG_FILE
+ * @brief Chemin du fichier de log
+ */
+#define LOG_FILE "conversations.log"
+
+/**
+ * @def USERS_FILE
+ * @brief Chemin du fichier de configuration des utilisateurs
+ */
+#define USERS_FILE "users.conf"
+
+/**
+ * @struct user_auth_t
+ * @brief Structure contenant les informations d'authentification d'un utilisateur
  */
 typedef struct {
-    int socket;             /** Socket file descriptor */
-    char username[50];      /** Client's username */
-    char status[STATUS_LENGTH]; /** Client's current status message */
-    int is_admin;          /** Whether this client is an admin (first to connect) */
+    char username[USERNAME_LENGTH];  /**< Nom d'utilisateur */
+    char password[PASSWORD_LENGTH];  /**< Mot de passe */
+} user_auth_t;
+
+/**
+ * @struct client_t
+ * @brief Structure contenant les informations d'un client connecté
+ */
+typedef struct {
+    int socket;                     /**< Socket du client */
+    char username[USERNAME_LENGTH];  /**< Nom d'utilisateur */
+    char status[STATUS_LENGTH];     /**< Statut actuel */
+    int is_admin;                   /**< 1 si admin, 0 sinon */
+    int is_authenticated;           /**< 1 si authentifié, 0 sinon */
 } client_t;
 
 /**
- * Structure containing server information
+ * @struct server_info_t
+ * @brief Structure contenant les informations du serveur
  */
 typedef struct {
-    time_t start_time;      /** Server start timestamp */
-    int max_clients_ever;   /** Maximum number of simultaneous connections */
-    char server_ip[16];     /** Server's IP address */
-    int server_port;        /** Server's port number */
+    time_t start_time;             /**< Heure de démarrage */
+    int max_clients_ever;          /**< Nombre maximum de clients connectés */
+    char server_ip[16];            /**< Adresse IP du serveur */
+    int server_port;               /**< Port du serveur */
 } server_info_t;
 
+/** Variables globales */
 client_t clients[MAX_CLIENTS];
 int client_count = 0;
 pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 server_info_t server_info;
+user_auth_t registered_users[MAX_CLIENTS];
+int registered_users_count = 0;
 
 /**
- * Logs a message to the log file
- * @param message The message to log
+ * @brief Écrit un message dans le fichier de log
+ * @param message Message à logger
  */
 void log_message(const char *message) {
     pthread_mutex_lock(&log_mutex);
     FILE *log_file = fopen(LOG_FILE, "a");
     if (log_file != NULL) {
-        fprintf(log_file, "%s", message);
+        time_t now = time(NULL);
+        char *date = ctime(&now);
+        date[strlen(date) - 1] = '\0';
+        fprintf(log_file, "[%s] %s", date, message);
         fclose(log_file);
     }
     pthread_mutex_unlock(&log_mutex);
 }
 
 /**
- * Sends the list of connected users to a client
- * @param client_socket Socket of the client to send the list to
- * @param new_user Username of the newly connected user
+ * @brief Charge les utilisateurs depuis le fichier de configuration
+ * @return 1 si succès, 0 si échec
+ */
+int load_users() {
+    FILE *file = fopen(USERS_FILE, "r");
+    if (!file) {
+        perror("Error opening users configuration file");
+        return 0;
+    }
+
+    char line[BUFFER_SIZE];
+    while (fgets(line, sizeof(line), file) && registered_users_count < MAX_CLIENTS) {
+        line[strcspn(line, "\n")] = 0;
+        
+        char *username = strtok(line, ":");
+        char *password = strtok(NULL, ":");
+        
+        if (username && password) {
+            strncpy(registered_users[registered_users_count].username, username, USERNAME_LENGTH - 1);
+            strncpy(registered_users[registered_users_count].password, password, PASSWORD_LENGTH - 1);
+            registered_users_count++;
+        }
+    }
+
+    fclose(file);
+    printf("Loaded %d users from configuration\n", registered_users_count);
+    return 1;
+}
+
+/**
+ * @brief Vérifie les credentials d'un utilisateur
+ * @param username Nom d'utilisateur
+ * @param password Mot de passe
+ * @return 1 si authentification réussie, 0 sinon
+ */
+int authenticate_user(const char *username, const char *password) {
+    for (int i = 0; i < registered_users_count; i++) {
+        if (strcmp(registered_users[i].username, username) == 0 &&
+            strcmp(registered_users[i].password, password) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/**
+ * @brief Vérifie si un utilisateur existe dans la configuration
+ * @param username Nom du utilisateur à vérifier
+ * @return 1 si l'utilisateur existe, 0 sinon
+ */
+int user_exists(const char *username) {
+    for (int i = 0; i < registered_users_count; i++) {
+        if (strcmp(registered_users[i].username, username) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/**
+ * @brief Envoie la liste des utilisateurs connectés à un client
+ * @param client_socket Socket du client
+ * @param new_user Nom du nouvel utilisateur
  */
 void send_user_list(int client_socket, const char *new_user) {
     char user_list[BUFFER_SIZE] = "Hello ";
@@ -98,7 +204,7 @@ void send_user_list(int client_socket, const char *new_user) {
 }
 
 /**
- * Updates the maximum number of simultaneous clients
+ * @brief Met à jour le nombre maximum de clients connectés
  */
 void update_max_clients() {
     if (client_count > server_info.max_clients_ever) {
@@ -107,8 +213,8 @@ void update_max_clients() {
 }
 
 /**
- * Handles the /info command, sending server information to the client
- * @param client_socket Socket of the requesting client
+ * @brief Gère la commande /info
+ * @param client_socket Socket du client demandant l'info
  */
 void handle_info_command(int client_socket) {
     char info_message[BUFFER_SIZE];
@@ -149,12 +255,12 @@ void handle_info_command(int client_socket) {
 }
 
 /**
- * Broadcasts a message to all connected clients except the sender
- * @param message Message content to broadcast
- * @param sender_socket Socket of the sending client
+ * @brief Diffuse un message à tous les clients sauf l'expéditeur
+ * @param message Message à diffuser
+ * @param sender_socket Socket de l'expéditeur
  */
 void broadcast_message(const char *message, int sender_socket) {
-    char username[50] = "";
+    char username[USERNAME_LENGTH] = "";
     char status[STATUS_LENGTH] = "";
     int is_admin = 0;
     char formatted_msg[BUFFER_SIZE];
@@ -195,14 +301,14 @@ void broadcast_message(const char *message, int sender_socket) {
 }
 
 /**
- * Kicks a user from the server (admin only)
- * @param admin_socket Socket of the admin requesting the kick
- * @param username Username of the user to kick
+ * @brief Expulse un utilisateur du serveur (admin uniquement)
+ * @param admin_socket Socket de l'admin
+ * @param username Nom de l'utilisateur à expulser
  */
 void kick_user(int admin_socket, const char *username) {
     int found = 0;
     char kick_msg[BUFFER_SIZE];
-    char admin_name[50] = "";
+    char admin_name[USERNAME_LENGTH] = "";
     
     pthread_mutex_lock(&clients_mutex);
     
@@ -258,8 +364,8 @@ void kick_user(int admin_socket, const char *username) {
 }
 
 /**
- * Removes a client from the server
- * @param socket Socket of the client to remove
+ * @brief Supprime un client du serveur
+ * @param socket Socket du client à supprimer
  */
 void remove_client(int socket) {
     pthread_mutex_lock(&clients_mutex);
@@ -276,8 +382,8 @@ void remove_client(int socket) {
 }
 
 /**
- * Gets the current status of a client
- * @param client_socket Socket of the client requesting their status
+ * @brief Récupère le statut actuel d'un client
+ * @param client_socket Socket du client
  */
 void get_client_status(int client_socket) {
     pthread_mutex_lock(&clients_mutex);
@@ -297,12 +403,12 @@ void get_client_status(int client_socket) {
 }
 
 /**
- * Updates a client's status and broadcasts the change
- * @param client_socket Socket of the client updating their status
- * @param status New status message
+ * @brief Met à jour le statut d'un client
+ * @param client_socket Socket du client
+ * @param status Nouveau statut
  */
 void update_client_status(int client_socket, const char *status) {
-    char username[50] = "";
+    char username[USERNAME_LENGTH] = "";
     char status_msg[BUFFER_SIZE];
 
     pthread_mutex_lock(&clients_mutex);
@@ -328,37 +434,99 @@ void update_client_status(int client_socket, const char *status) {
 }
 
 /**
- * Thread function to handle a connected client
- * @param arg Pointer to the client socket
+ * @brief Thread gérant un client connecté
+ * @param arg Pointeur vers le socket du client
  * @return NULL
  */
 void *handle_client(void *arg) {
     int client_socket = *(int*)arg;
-    char buffer[BUFFER_SIZE];
     free(arg);
+    char buffer[BUFFER_SIZE];
+    char username[USERNAME_LENGTH];
+    char password[PASSWORD_LENGTH];
+    int auth_attempts = 0;
+    const int MAX_AUTH_ATTEMPTS = 3;
 
-    memset(buffer, 0, BUFFER_SIZE);
-    int bytes_read = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
-    if (bytes_read <= 0) {
-        close(client_socket);
-        return NULL;
+    // Authentification
+    while (auth_attempts < MAX_AUTH_ATTEMPTS) {
+        // Recevoir le nom d'utilisateur
+        memset(buffer, 0, BUFFER_SIZE);
+        if (recv(client_socket, buffer, BUFFER_SIZE - 1, 0) <= 0) {
+            close(client_socket);
+            return NULL;
+        }
+        strncpy(username, buffer, USERNAME_LENGTH - 1);
+
+        // Vérifier si l'utilisateur existe
+        if (!user_exists(username)) {
+            const char *error_msg = "User does not exist!\n";
+            send(client_socket, error_msg, strlen(error_msg), 0);
+            close(client_socket);
+            return NULL;
+        }
+
+        // Demander le mot de passe
+        const char *prompt = "Enter password: ";
+        send(client_socket, prompt, strlen(prompt), 0);
+
+        // Recevoir le mot de passe
+        memset(buffer, 0, BUFFER_SIZE);
+        if (recv(client_socket, buffer, BUFFER_SIZE - 1, 0) <= 0) {
+            close(client_socket);
+            return NULL;
+        }
+        strncpy(password, buffer, PASSWORD_LENGTH - 1);
+
+        // Vérifier l'authentification
+        if (authenticate_user(username, password)) {
+            const char *success_msg = "Authentication successful!\n";
+            send(client_socket, success_msg, strlen(success_msg), 0);
+            break;
+        } else {
+            auth_attempts++;
+            if (auth_attempts < MAX_AUTH_ATTEMPTS) {
+                char error_msg[100];
+                snprintf(error_msg, sizeof(error_msg), 
+                    "Wrong password. %d attempts remaining.\n", 
+                    MAX_AUTH_ATTEMPTS - auth_attempts);
+                send(client_socket, error_msg, strlen(error_msg), 0);
+            } else {
+                const char *final_msg = "Too many failed attempts. Connection closed.\n";
+                send(client_socket, final_msg, strlen(final_msg), 0);
+                close(client_socket);
+                return NULL;
+            }
+        }
     }
-    buffer[bytes_read] = '\0';
 
+    // Ajouter le client authentifié
     pthread_mutex_lock(&clients_mutex);
-    strncpy(clients[client_count].username, buffer, 49);
-    clients[client_count].status[0] = '\0';
-    clients[client_count].socket = client_socket;
-    clients[client_count].is_admin = (client_count == 0);
+    int client_index = client_count;
+    strncpy(clients[client_index].username, username, USERNAME_LENGTH - 1);
+    clients[client_index].socket = client_socket;
+    clients[client_index].is_admin = (strcmp(username, "Admin") == 0);
+    clients[client_index].is_authenticated = 1;
+    clients[client_index].status[0] = '\0';
     client_count++;
     update_max_clients();
     pthread_mutex_unlock(&clients_mutex);
 
-    send_user_list(client_socket, buffer);
+    // Envoyer message de bienvenue
+    char welcome_msg[BUFFER_SIZE];
+    snprintf(welcome_msg, BUFFER_SIZE, "Welcome %s%s!\n", 
+             username, clients[client_index].is_admin ? " (admin)" : "");
+    send(client_socket, welcome_msg, strlen(welcome_msg), 0);
+
+    // Annoncer la connexion aux autres
+    char join_msg[BUFFER_SIZE];
+    snprintf(join_msg, BUFFER_SIZE, "# %s%s has joined the chat\n", 
+             username, clients[client_index].is_admin ? " (*)" : "");
+    broadcast_message(join_msg, client_socket);
+    log_message(join_msg);
 
     while (1) {
         memset(buffer, 0, BUFFER_SIZE);
-        bytes_read = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
+        int bytes_read = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
         if (bytes_read <= 0) {
             break;
         }
@@ -383,14 +551,19 @@ void *handle_client(void *arg) {
 }
 
 /**
- * Main server function
- * @param argc Argument count
- * @param argv Argument vector
- * @return 0 on success, 1 on error
+ * @brief Fonction principale
+ * @param argc Nombre d'arguments
+ * @param argv Tableau des arguments
+ * @return 0 si succès, 1 si erreur
  */
 int main(int argc, char *argv[]) {
     if (argc != 2) {
         printf("Usage: %s <port>\n", argv[0]);
+        return 1;
+    }
+
+    // Charger les utilisateurs depuis le fichier de configuration
+    if (!load_users()) {
         return 1;
     }
 

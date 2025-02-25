@@ -1,3 +1,8 @@
+/**
+ * @file client.c
+ * @brief Client de chat avec authentification
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -5,82 +10,80 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <netdb.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdbool.h>
 
 /**
- * Size of the buffer used for message transmission
+ * @def BUFFER_SIZE
+ * @brief Taille du buffer pour les messages
  */
 #define BUFFER_SIZE 1024
 
 /**
- * Maximum length of a status message
+ * @def STATUS_LENGTH
+ * @brief Longueur maximale d'un message de statut
  */
 #define STATUS_LENGTH 128
 
-/**
- * Global state for Do Not Disturb mode
- */
-bool pause_mode = false;
+/** Variables globales */
+int client_socket;                          /**< Socket du client */
+bool pause_mode = false;                    /**< Mode "Ne pas déranger" */
+char current_status[STATUS_LENGTH] = "";    /**< Statut actuel de l'utilisateur */
 
 /**
- * Current user's status message
- */
-char current_status[STATUS_LENGTH] = "";
-
-/**
- * Displays help information about available commands
+ * @brief Affiche les informations d'aide sur les commandes disponibles
  */
 void print_help() {
     printf("\nAvailable commands:\n");
-    printf("/status [message] - View or set your status\n");
-    printf("/info            - Show server information\n");
-    printf("/pause           - Toggle Do Not Disturb mode\n");
-    printf("/kick <username> - (Admin only) Kick a user from the server\n");
-    printf("/help            - Show this help message\n\n");
+    printf("/help - Display this help message\n");
+    printf("/quit - Exit the chat\n");
+    printf("/status <message> - Update your status\n");
+    printf("/pause - Toggle Do Not Disturb mode\n");
+    printf("/info - Display server information\n");
+    printf("/kick <username> - Kick a user (admin only)\n");
 }
 
 /**
- * Thread function to handle receiving messages from server
- * @param socket_desc Pointer to socket file descriptor
+ * @brief Gestionnaire du signal SIGINT (Ctrl+C)
+ * @param sig Numéro du signal
+ */
+void handle_sigint(int sig) {
+    (void)sig;
+    printf("\nDéconnexion...\n");
+    close(client_socket);
+    exit(0);
+}
+
+/**
+ * @brief Thread de réception des messages
+ * @param arg Pointeur vers le socket client
  * @return NULL
  */
-void *receive_handler(void *socket_desc) {
-    int sock = *(int*)socket_desc;
+void *receive_handler(void *arg) {
+    int sock = *(int*)arg;
     char buffer[BUFFER_SIZE];
-    int first_message = 1;
-    
-    while (1) {
-        memset(buffer, 0, BUFFER_SIZE);
-        ssize_t bytes_read = read(sock, buffer, BUFFER_SIZE - 1);
-        if (bytes_read <= 0) {
-            printf("\nServer disconnected\n");
-            exit(1);
-        }
-        buffer[bytes_read] = '\0';
+    ssize_t bytes_received;
 
-        // First message is the user list
-        if (first_message) {
+    while ((bytes_received = recv(sock, buffer, BUFFER_SIZE - 1, 0)) > 0) {
+        buffer[bytes_received] = '\0';
+        if (!pause_mode) {
             printf("%s", buffer);
-            first_message = 0;
-        } else {
-            // Clear current line and print message
-            printf("\r\033[K%s", buffer);
+            fflush(stdout);
         }
-        
-        // Always show prompt after any message
-        printf("Send a new message: ");
-        fflush(stdout);
     }
+
+    printf("Déconnecté du serveur.\n");
+    close(sock);
+    exit(0);
     return NULL;
 }
 
 /**
- * Main client function
- * @param argc Argument count
- * @param argv Argument vector (server_ip, port, username)
- * @return 0 on success, 1 on error
+ * @brief Fonction principale
+ * @param argc Nombre d'arguments
+ * @param argv Tableau des arguments
+ * @return 0 si succès, 1 si erreur
  */
 int main(int argc, char *argv[]) {
     if (argc != 4) {
@@ -92,7 +95,7 @@ int main(int argc, char *argv[]) {
     int port = atoi(argv[2]);
     const char *username = argv[3];
 
-    int client_socket = socket(AF_INET, SOCK_STREAM, 0);
+    client_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (client_socket == -1) {
         perror("Socket creation failed");
         return 1;
@@ -115,10 +118,64 @@ int main(int argc, char *argv[]) {
     }
     printf("OK.\n");
 
-    // Send initial username to server
+    // Envoyer le nom d'utilisateur
     write(client_socket, username, strlen(username));
 
-    // Create thread for receiving messages
+    // Lire la réponse du serveur
+    char buffer[BUFFER_SIZE];
+    ssize_t bytes_read = read(client_socket, buffer, BUFFER_SIZE - 1);
+    if (bytes_read <= 0) {
+        printf("Server disconnected\n");
+        close(client_socket);
+        return 1;
+    }
+    buffer[bytes_read] = '\0';
+    printf("%s", buffer);
+
+    // Si l'utilisateur n'existe pas, quitter
+    if (strstr(buffer, "does not exist")) {
+        close(client_socket);
+        return 1;
+    }
+
+    // Boucle d'authentification
+    while (1) {
+        // Lire le mot de passe
+        char password[BUFFER_SIZE];
+        if (fgets(password, BUFFER_SIZE, stdin) == NULL) {
+            printf("Error reading password\n");
+            close(client_socket);
+            return 1;
+        }
+        password[strcspn(password, "\n")] = 0;
+
+        // Envoyer le mot de passe
+        write(client_socket, password, strlen(password));
+
+        // Lire la réponse d'authentification
+        bytes_read = read(client_socket, buffer, BUFFER_SIZE - 1);
+        if (bytes_read <= 0) {
+            printf("Server disconnected\n");
+            close(client_socket);
+            return 1;
+        }
+        buffer[bytes_read] = '\0';
+        printf("%s", buffer);
+
+        // Si authentification réussie, sortir de la boucle
+        if (strstr(buffer, "successful")) {
+            break;
+        }
+        
+        // Si trop de tentatives ou mot de passe incorrect, quitter
+        if (strstr(buffer, "Too many") || strstr(buffer, "Wrong password")) {
+            close(client_socket);
+            printf("Authentication failed. Exiting...\n");
+            return 1;
+        }
+    }
+
+    // Créer le thread de réception
     pthread_t recv_thread;
     if (pthread_create(&recv_thread, NULL, receive_handler, (void*)&client_socket) < 0) {
         perror("Could not create receive thread");
@@ -140,6 +197,11 @@ int main(int argc, char *argv[]) {
         if (strcmp(message, "/help") == 0) {
             print_help();
             continue;
+        } else if (strcmp(message, "/quit") == 0) {
+            close(client_socket);
+            pthread_cancel(recv_thread);
+            pthread_join(recv_thread, NULL);
+            return 0;
         } else if (strcmp(message, "/pause") == 0) {
             pause_mode = !pause_mode;
             printf("Do Not Disturb mode: %s\n", pause_mode ? "ON" : "OFF");
@@ -162,15 +224,13 @@ int main(int argc, char *argv[]) {
         if (!pause_mode) {
             // Show message locally with admin star if first client
             if (current_status[0] != '\0') {
-                printf("# %s%s (me) (%s) > %s\n", 
+                printf("# %s (me) (%s) > %s\n", 
                     username, 
-                    client_socket == 1 ? "(*)" : "",  // First client is admin
                     current_status, 
                     message);
             } else {
-                printf("# %s%s (me) > %s\n", 
+                printf("# %s (me) > %s\n", 
                     username,
-                    client_socket == 1 ? "(*)" : "",  // First client is admin
                     message);
             }
 
