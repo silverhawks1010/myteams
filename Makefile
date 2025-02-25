@@ -1,31 +1,16 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -Werror
 LDFLAGS = -pthread
-RM = rm -f
 
-SERVER_NAME = server
-CLIENT_NAME = client
+all: server client
 
-SERVER_SRC = server.c
-CLIENT_SRC = client.c
+server: server.c
+	$(CC) $(CFLAGS) server.c $(LDFLAGS) -o server
 
-SERVER_OBJ = $(SERVER_SRC:.c=.o)
-CLIENT_OBJ = $(CLIENT_SRC:.c=.o)
-
-all: $(SERVER_NAME) $(CLIENT_NAME)
-
-$(SERVER_NAME): $(SERVER_OBJ)
-	$(CC) $(SERVER_OBJ) $(LDFLAGS) -o $(SERVER_NAME)
-
-$(CLIENT_NAME): $(CLIENT_OBJ)
-	$(CC) $(CLIENT_OBJ) $(LDFLAGS) -o $(CLIENT_NAME)
+client: client.c
+	$(CC) $(CFLAGS) client.c $(LDFLAGS) -o client
 
 clean:
-	$(RM) $(SERVER_OBJ) $(CLIENT_OBJ)
+	rm -f server client
 
-fclean: clean
-	$(RM) $(SERVER_NAME) $(CLIENT_NAME)
-
-re: fclean all
-
-.PHONY: all clean fclean re
+.PHONY: all clean
