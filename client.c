@@ -14,6 +14,7 @@
 #include <signal.h>
 #include <stdbool.h>
 
+
 /**
  * @def BUFFER_SIZE
  * @brief Taille du buffer pour les messages
@@ -45,12 +46,82 @@ void print_help() {
 }
 
 /**
+ * @brief Envoyer un fichier au serveur
+ */
+void send_file(int socket, const char *filename) {
+    char buffer[BUFFER_SIZE];
+    FILE *file = fopen(filename, "rb");
+    if (!file) {
+        perror("Error while opening the file");
+        return;
+    } else {
+        printf("[+] Sending the file to remote server\n");
+    }
+
+    ssize_t n;
+    while ((n = fread(buffer, 1, BUFFER_SIZE, file)) > 0) {
+        if (send(socket, buffer, n, 0) == -1) {
+            perror("[-] Error sending data to server");
+            fclose(file);
+            return;
+        }
+        bzero(buffer, BUFFER_SIZE);  // Nettoyer le buffer après l'envoi
+    }
+
+    fclose(file);
+
+    strcpy(buffer, "END");
+    send(socket, buffer, strlen(buffer) + 1, 0);
+}
+
+/**
+ * @brief Pour recevoir un fichier demandé via /get
+ */
+void receive_file(int socket, const char *filename) {
+    char buffer[BUFFER_SIZE];
+    FILE *file = fopen(filename, "wb");
+    if (!file) {
+        perror("Error while creating the file");
+        return;
+    }
+
+    while (1) {
+        ssize_t n = recv(socket, buffer, BUFFER_SIZE, 0);
+        if (n <= 0) {
+            if (n == 0) {
+                printf("Connexion close by the server\n");
+            } else {
+                perror("Error during reception\n");
+            }
+            break;
+        }
+
+        // Vérifier si le serveur a envoyé un message d'erreur
+        if (strncmp(buffer, "Sorry, the file that you request isn't available", 47) == 0) {
+            printf("[-] The requested file is not available\n");
+            fclose(file);
+            remove(filename);  // Supprime le fichier vide créé
+            return;
+        }
+
+        if (n == 3 && strncmp(buffer, "END", 3) == 0) {
+            printf("[+] File transmission completed.\n");
+            break;
+        }
+
+        fwrite(buffer, 1, n, file);
+    }
+
+    fclose(file);
+}
+
+/**
  * @brief Gestionnaire du signal SIGINT (Ctrl+C)
  * @param sig Numéro du signal
  */
 void handle_sigint(int sig) {
     (void)sig;
-    printf("\nDéconnexion...\n");
+    printf("\nDeconnexion...\n");
     close(client_socket);
     exit(0);
 }
@@ -73,7 +144,7 @@ void *receive_handler(void *arg) {
         }
     }
 
-    printf("Déconnecté du serveur.\n");
+    printf("Disconnected.\n");
     close(sock);
     exit(0);
     return NULL;
@@ -104,7 +175,7 @@ int main(int argc, char *argv[]) {
     struct sockaddr_in server_addr;
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(port);
-    
+
     if (inet_pton(AF_INET, server_ip, &server_addr.sin_addr) <= 0) {
         printf("Invalid address or address not supported\n");
         return 1;
@@ -152,7 +223,7 @@ int main(int argc, char *argv[]) {
         // Envoyer le mot de passe
         write(client_socket, password, strlen(password));
 
-        // Lire la réponse d'authentification
+        // Lire la reponse d'authentification
         bytes_read = read(client_socket, buffer, BUFFER_SIZE - 1);
         if (bytes_read <= 0) {
             printf("Server disconnected\n");
@@ -166,7 +237,7 @@ int main(int argc, char *argv[]) {
         if (strstr(buffer, "successful")) {
             break;
         }
-        
+
         // Si trop de tentatives ou mot de passe incorrect, quitter
         if (strstr(buffer, "Too many") || strstr(buffer, "Wrong password")) {
             close(client_socket);
@@ -175,7 +246,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Créer le thread de réception
+    // Créer le thread de récéption
     pthread_t recv_thread;
     if (pthread_create(&recv_thread, NULL, receive_handler, (void*)&client_socket) < 0) {
         perror("Could not create receive thread");
@@ -186,11 +257,11 @@ int main(int argc, char *argv[]) {
     while (1) {
         printf("Send a new message: ");
         fflush(stdout);
-        
+
         if (fgets(message, BUFFER_SIZE, stdin) == NULL) {
             break;
         }
-        
+
         message[strcspn(message, "\n")] = 0;
 
         // Handle commands
@@ -219,17 +290,33 @@ int main(int argc, char *argv[]) {
         } else if (strncmp(message, "/kick ", 6) == 0) {
             write(client_socket, message, strlen(message));
             continue;
+        } else if (strncmp(message, "/push ", 6) == 0) {
+            write(client_socket, message, strlen(message));
+            char filename[1024];
+            if (sscanf(message + 6, "%255s", filename) == 1) {
+                send_file(client_socket, filename);
+                continue;
+                } else {
+                printf("Error : no file specified\n");
+                continue;
+                }
+        } else if ((strncmp(message, "/get ", 5) == 0)){
+            char* filename = message + 5;
+            printf("%s\n", filename);
+            write(client_socket, message, strlen(message));
+            receive_file(client_socket, filename);
+            continue;
         }
 
         if (!pause_mode) {
             // Show message locally with admin star if first client
             if (current_status[0] != '\0') {
-                printf("# %s (me) (%s) > %s\n", 
-                    username, 
-                    current_status, 
+                printf("# %s (me) (%s) > %s\n",
+                    username,
+                    current_status,
                     message);
             } else {
-                printf("# %s (me) > %s\n", 
+                printf("# %s (me) > %s\n",
                     username,
                     message);
             }
