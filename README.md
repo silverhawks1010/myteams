@@ -14,4 +14,5 @@ Mini Teams est un mini programme de chat codé en C et utilisants les sockets.
 - Plaisir 3
 - Plaisir 4
 - Plaisir 5
+- Plaisir 6
 - Plaisir 8
