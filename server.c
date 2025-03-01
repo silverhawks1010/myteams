@@ -128,10 +128,10 @@ int load_users() {
     char line[BUFFER_SIZE];
     while (fgets(line, sizeof(line), file) && registered_users_count < MAX_CLIENTS) {
         line[strcspn(line, "\n")] = 0;
-        
+
         char *username = strtok(line, ":");
         char *password = strtok(NULL, ":");
-        
+
         if (username && password) {
             strncpy(registered_users[registered_users_count].username, username, USERNAME_LENGTH - 1);
             strncpy(registered_users[registered_users_count].password, password, PASSWORD_LENGTH - 1);
@@ -183,7 +183,7 @@ void send_user_list(int client_socket, const char *new_user) {
     char user_list[BUFFER_SIZE] = "Hello ";
     strcat(user_list, new_user);
     strcat(user_list, "\nConnected users:\n");
-    
+
     pthread_mutex_lock(&clients_mutex);
     for (int i = 0; i < client_count; i++) {
         if (clients[i].socket != client_socket) {
@@ -199,7 +199,7 @@ void send_user_list(int client_socket, const char *new_user) {
         }
     }
     pthread_mutex_unlock(&clients_mutex);
-    
+
     send(client_socket, user_list, strlen(user_list), 0);
 }
 
@@ -250,7 +250,7 @@ void handle_info_command(int client_socket) {
         strcat(info_message, "\n");
     }
     pthread_mutex_unlock(&clients_mutex);
-    
+
     send(client_socket, info_message, strlen(info_message), 0);
 }
 
@@ -277,15 +277,15 @@ void broadcast_message(const char *message, int sender_socket) {
     pthread_mutex_unlock(&clients_mutex);
 
     if (status[0] != '\0') {
-        snprintf(formatted_msg, BUFFER_SIZE, "# %s%s (%s) > %s\n", 
-                username, 
-                is_admin ? "(*)" : "", 
-                status, 
+        snprintf(formatted_msg, BUFFER_SIZE, "# %s%s (%s) > %s\n",
+                username,
+                is_admin ? "(*)" : "",
+                status,
                 message);
     } else {
-        snprintf(formatted_msg, BUFFER_SIZE, "# %s%s > %s\n", 
-                username, 
-                is_admin ? "(*)" : "", 
+        snprintf(formatted_msg, BUFFER_SIZE, "# %s%s > %s\n",
+                username,
+                is_admin ? "(*)" : "",
                 message);
     }
 
@@ -309,9 +309,9 @@ void kick_user(int admin_socket, const char *username) {
     int found = 0;
     char kick_msg[BUFFER_SIZE];
     char admin_name[USERNAME_LENGTH] = "";
-    
+
     pthread_mutex_lock(&clients_mutex);
-    
+
     int is_admin = 0;
     for (int i = 0; i < client_count; i++) {
         if (clients[i].socket == admin_socket) {
@@ -320,33 +320,33 @@ void kick_user(int admin_socket, const char *username) {
             break;
         }
     }
-    
+
     if (!is_admin) {
         pthread_mutex_unlock(&clients_mutex);
         snprintf(kick_msg, BUFFER_SIZE, "You are not an admin!\n");
         write(admin_socket, kick_msg, strlen(kick_msg));
         return;
     }
-    
+
     for (int i = 0; i < client_count; i++) {
         if (strcmp(clients[i].username, username) == 0) {
             found = 1;
-            
+
             if (clients[i].is_admin) {
                 pthread_mutex_unlock(&clients_mutex);
                 snprintf(kick_msg, BUFFER_SIZE, "Cannot kick another admin!\n");
                 write(admin_socket, kick_msg, strlen(kick_msg));
                 return;
             }
-            
+
             snprintf(kick_msg, BUFFER_SIZE, "# %s has been kicked by admin %s\n", username, admin_name);
             for (int j = 0; j < client_count; j++) {
                 write(clients[j].socket, kick_msg, strlen(kick_msg));
             }
-            
+
             close(clients[i].socket);
             log_message(kick_msg);
-            
+
             for (int j = i; j < client_count - 1; j++) {
                 clients[j] = clients[j + 1];
             }
@@ -354,9 +354,9 @@ void kick_user(int admin_socket, const char *username) {
             break;
         }
     }
-    
+
     pthread_mutex_unlock(&clients_mutex);
-    
+
     if (!found) {
         snprintf(kick_msg, BUFFER_SIZE, "User %s not found\n", username);
         write(admin_socket, kick_msg, strlen(kick_msg));
@@ -382,7 +382,7 @@ void remove_client(int socket) {
 }
 
 /**
- * @brief Récupère le statut actuel d'un client
+z * @brief Récupère le statut actuel d'un client
  * @param client_socket Socket du client
  */
 void get_client_status(int client_socket) {
@@ -400,6 +400,81 @@ void get_client_status(int client_socket) {
         }
     }
     pthread_mutex_unlock(&clients_mutex);
+}
+
+/**
+ * @brief Recois de la data et en créer un fichier en ajoutant l'extension .saved
+ */
+void receive_file(int client_socket, char* filename) {
+    char buffer[BUFFER_SIZE];
+    printf("Saving file %s\n", filename);
+    strcat(filename, ".saved");
+
+    FILE *file = fopen(filename, "wb");
+    if (!file) {
+        perror("Error while opening the file");
+        return;
+    }
+
+    while (1) {
+        ssize_t n = recv(client_socket, buffer, BUFFER_SIZE, 0);
+        if (n <= 0) {
+            if (n == 0) {
+                printf("Connexion reset by the client\n");
+            } else {
+                perror("Error during reception\n");
+            }
+            break;
+        }
+
+        char *end_marker = strstr(buffer, "END"); // Voir si ya le mot END dans le buffer qui permet de déterminer la fin
+        if (end_marker) {
+
+            fwrite(buffer, 1, end_marker - buffer, file);
+            printf("File transmission completed.\n");
+            break;
+        }
+
+        fwrite(buffer, 1, n, file);
+        bzero(buffer, BUFFER_SIZE);
+    }
+
+    fclose(file);
+
+    char message[] = "File has been saved";
+    send(client_socket, message, sizeof(message), 0);
+}
+
+
+/**
+ * @brief Envoie la data d'un fichier demandé par l'utilisateur via /get (ne marche que pour les fichiers sauvergarder par le serveur qui se termine donc par .saved)
+ */
+void send_file(int client_socket, char* filename) {
+    char buffer[BUFFER_SIZE];
+    char error[] = "Sorry, the file that you request isn't available";
+
+    strcat(filename, ".saved");  // Ajouter l'extension .saved
+    FILE *file = fopen(filename, "rb");
+    if (!file) {
+        send(client_socket, error, strlen(error), 0);
+        return;
+    } else {
+        printf("[+] Sending the file to remote client\n");
+    }
+
+    ssize_t n;
+    while ((n = fread(buffer, 1, BUFFER_SIZE, file)) > 0) {
+        if (send(client_socket, buffer, n, 0) == -1) {
+            perror("[-] Error sending data to client");
+            fclose(file);
+            return;
+        }
+    }
+
+    fclose(file);
+
+     strcpy(buffer, "END");
+    send(client_socket, buffer, strlen(buffer), 0);
 }
 
 /**
@@ -480,14 +555,15 @@ void *handle_client(void *arg) {
         // Vérifier l'authentification
         if (authenticate_user(username, password)) {
             const char *success_msg = "Authentication successful!\n";
+            fflush(stdout);
             send(client_socket, success_msg, strlen(success_msg), 0);
             break;
         } else {
             auth_attempts++;
             if (auth_attempts < MAX_AUTH_ATTEMPTS) {
                 char error_msg[100];
-                snprintf(error_msg, sizeof(error_msg), 
-                    "Wrong password. %d attempts remaining.\n", 
+                snprintf(error_msg, sizeof(error_msg),
+                    "Wrong password. %d attempts remaining.\n",
                     MAX_AUTH_ATTEMPTS - auth_attempts);
                 send(client_socket, error_msg, strlen(error_msg), 0);
             } else {
@@ -513,13 +589,13 @@ void *handle_client(void *arg) {
 
     // Envoyer message de bienvenue
     char welcome_msg[BUFFER_SIZE];
-    snprintf(welcome_msg, BUFFER_SIZE, "Welcome %s%s!\n", 
+    snprintf(welcome_msg, BUFFER_SIZE, "Welcome %s%s!\n",
              username, clients[client_index].is_admin ? " (admin)" : "");
     send(client_socket, welcome_msg, strlen(welcome_msg), 0);
 
     // Annoncer la connexion aux autres
     char join_msg[BUFFER_SIZE];
-    snprintf(join_msg, BUFFER_SIZE, "# %s%s has joined the chat\n", 
+    snprintf(join_msg, BUFFER_SIZE, "# %s%s has joined the chat\n",
              username, clients[client_index].is_admin ? " (*)" : "");
     broadcast_message(join_msg, client_socket);
     log_message(join_msg);
@@ -540,6 +616,12 @@ void *handle_client(void *arg) {
             handle_info_command(client_socket);
         } else if (strncmp(buffer, "/kick ", 6) == 0) {
             kick_user(client_socket, buffer + 6);
+        } else if (strncmp(buffer, "/push ", 6) == 0){
+            char * filename = buffer + 6;
+            receive_file(client_socket, filename);
+        } else if (strncmp(buffer, "/get ", 5) == 0){
+          char * filename = buffer + 5;
+          send_file(client_socket, filename);
         } else {
             broadcast_message(buffer, client_socket);
         }
@@ -615,7 +697,7 @@ int main(int argc, char *argv[]) {
         socklen_t client_len = sizeof(client_addr);
         int *client_socket = malloc(sizeof(int));
         *client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &client_len);
-        
+
         if (*client_socket < 0) {
             perror("Accept failed");
             free(client_socket);
