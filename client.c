@@ -43,6 +43,8 @@ void print_help() {
     printf("/pause - Toggle Do Not Disturb mode\n");
     printf("/info - Display server information\n");
     printf("/kick <username> - Kick a user (admin only)\n");
+    printf("/push <filename> - Upload a file to remote server\n");
+    printf("/get <filename> - Download a file from remote server - Only files that have been upload can be download !\n");
 }
 
 /**
